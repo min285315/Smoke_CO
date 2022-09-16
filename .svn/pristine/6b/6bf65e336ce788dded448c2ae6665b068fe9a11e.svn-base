@@ -1,0 +1,436 @@
+#include "base.h"
+#include "main.h"
+#include "stdio.h"
+#include "adc.h"
+#include "lcd.h"
+#include "led.h"
+
+struct Sensor{
+	uint16_t TempAdcSampe;
+	uint8_t Temp;// offset +20
+};
+
+
+/* Private typedef -----------------------------------------------------------*/
+
+struct RTCApi{
+    uint8_t  State;
+	uint16_t rtc_1s;
+	
+};
+typedef struct RTCApi RTCApiTag;
+
+static RTCApiTag  RtcObject;
+
+
+extern uint8_t capture_state;
+extern uint32_t capture_count;
+
+typedef struct Sensor SensorTag;
+static SensorTag SensorObject;
+
+
+const uint16_t NTC_Table[91]={ 
+	3741, 3721, 3699, 3677, 3654,  	//-20¡æ ~ -16¡æ
+	3630, 3605, 3535, 3552, 3525,  	//-15¡æ ~ -11¡æ
+	3496, 3466, 3435, 3404, 3360,  	//-10¡æ ~ -6¡æ 
+	3338, 3303, 3268, 3232, 3195,  	//-5¡æ ~ 1¡æ
+	3157, 						//0¡æ 
+	3118, 3079, 3038, 2998, 2956,	// 1 //¡æ ~ 5¡æ
+	2914, 2871, 2827, 2783, 2738, 	//6¡æ ~ 10¡æ
+	2694, 2648, 2603, 2557, 2511, 	//11¡æ ~ 15¡æ
+	2464, 2418, 2371, 2325, 2279, 	//16¡æ ~ 20¡æ
+	2232, 2186, 2140, 2094, 2048, 	//21¡æ ~ 25¡æ
+	2003, 1958, 1913, 1881, 1825, 	//26¡æ ~ 30¡æ
+	1782, 1739, 1697, 1655, 1614, 	//31¡æ ~ 35¡æ
+	1574, 1534, 1495, 1457, 1419,	//36¡æ ~ 40¡æ
+	1383, 1345, 1310, 1275, 1241, 	//41¡æ ~ 45¡æ
+	1208, 1175, 1143, 1112, 1082, 	//46¡æ ~ 50¡æ
+	1052, 1023, 995,  967,  940,  	//51¡æ ~ 55¡æ
+	913,  888,  863,  839,  816,  	//56¡æ ~ 60¡æ
+	793,  770,  749,  728,  707,  	//61¡æ ~ 65¡æ
+	687,  668,  649,  631,  613,		//66¡æ ~ 70¡æ
+};
+
+
+
+
+
+#define LSI_PERIOD_NUMBERS         10
+
+/**********************************************************************/
+//Name:			Delay()
+//Description:																  
+//Parameters:                        												  
+//Return:   																  
+//Date:           
+//Author:		quanwu.xu  
+/**********************************************************************/
+void Delay(__IO uint16_t TimeCnt)
+{
+	while(TimeCnt != 0)
+	{
+		TimeCnt--;
+		nop();
+	}	
+}
+
+/**********************************************************************/
+//Name:			DelayMs()
+//Description:																
+//Parameters:                        										
+//Return:   																
+//Date:           
+//Author:		quanwu.xu  
+/**********************************************************************/
+void DelayMs(__IO uint16_t nTime)		//1ms
+{
+    uint16_t i;
+    
+    while(nTime--)
+    {
+        for(i=815; i>0; i--)
+        {
+            nop();
+        }
+    }
+}
+
+/**********************************************************************/
+//Name:			LsiMeasurmentClkconfig()
+//Description:															
+//Parameters:                        									
+//Return:   															
+//Date:           
+//Author:		quanwu.xu  
+/**********************************************************************/
+static void LsiMeasurmentClkconfig(void)
+{
+
+    /* High Speed Internal clock divider: 1 */
+    CLK_SYSCLKDivConfig(CLK_SYSCLKDiv_1);
+
+    /* Enable LSI clock */
+    CLK_LSICmd(ENABLE);
+
+    /* Wait for LSI clock to be ready */
+    while (CLK_GetFlagStatus(CLK_FLAG_LSIRDY) == RESET);
+
+    /* Wait for BEEP switch busy flag to be reset */
+    while (CLK_GetFlagStatus(CLK_FLAG_BEEPSWBSY) == SET);
+
+    /* Select LSI clock as source for BEEP */
+    CLK_BEEPClockConfig(CLK_BEEPCLKSource_LSI);
+
+    /* Enable TIM2 clock */
+    CLK_PeripheralClockConfig(CLK_Peripheral_TIM2, ENABLE);
+
+    /* Enable BEEP clock to get write access for BEEP registers */
+    CLK_PeripheralClockConfig(CLK_Peripheral_BEEP, ENABLE);
+}
+
+
+
+/* Private functions ---------------------------------------------------------*/
+void RtcSetBaseTime(uint16_t rtc_1s)
+{
+	
+	RtcObject.rtc_1s = rtc_1s;
+
+}
+
+uint16_t RtcGetBaseTime(void)
+{
+	
+	return RtcObject.rtc_1s;
+
+}
+
+
+
+/**********************************************************************/
+//Name:			LsiMeasurment()
+//Description:															
+//Parameters:                        									
+//Return:   															
+//Date:           
+//Author:		quanwu.xu  
+/**********************************************************************/
+void LsiMeasurment(void)
+{
+	uint8_t icfilter = 0;
+	uint32_t LsiCurrentPeriod = 0;
+	uint32_t LsiMeasuredFrequencyCumul = 0;
+	uint8_t LsiPeriodCounter = 0;
+	uint16_t lsi_measured_frequency = 0;
+
+	LsiMeasurmentClkconfig(); /* Clock Configuration */
+	enableInterrupts(); //enable interrupts  
+
+	/* Enable the LSI measurement: LSI clock connected to timer Input Capture 1 */
+	BEEP_LSClockToTIMConnectCmd(ENABLE);
+
+	/* TIM2 configuration: Input Capture mode */
+	/* Configure TIM2 channel 1 in input capture mode */
+	/* The signal in input is divided and not filtered */
+	/* The capture occurs when a rising edge is detected on TIM2 channel 1 */
+	TIM2_ICInit(TIM2_Channel_1, TIM2_ICPolarity_Rising, TIM2_ICSelection_DirectTI,
+	          TIM2_ICPSC_DIV8, icfilter);
+
+	LsiPeriodCounter = 0;
+	/**************************** START of LSI Measurement **********************/
+	while (LsiPeriodCounter <= LSI_PERIOD_NUMBERS)
+	{
+		capture_state = 1;
+		/* Clear all TM2 flags */
+		TIM2_GenerateEvent(TIM2_EventSource_Update);
+		TIM2->SR1 = 0;
+		TIM2->SR2 = 0;
+		/* Enable capture 1 interrupt */
+		TIM2_ITConfig(TIM2_IT_CC1, ENABLE);
+		/* Enable TIM2 */
+		TIM2_Cmd(ENABLE);
+
+		while (capture_state != 255);
+
+		if (LsiPeriodCounter != 0)
+		{
+			/* Compute the frequency value */
+			LsiCurrentPeriod = (uint32_t) 8 * (HSI_VALUE / capture_count);
+			/* Add the current frequency to previous cumulation */
+			LsiMeasuredFrequencyCumul = LsiMeasuredFrequencyCumul + LsiCurrentPeriod;
+		}
+		LsiPeriodCounter++;
+	}
+	/**************************** END of LSI Measurement ************************/
+
+	/* Compute the average of LSI frequency value */
+	lsi_measured_frequency = (uint16_t) (LsiMeasuredFrequencyCumul / LSI_PERIOD_NUMBERS);
+
+	/* Disconnect LSI clock from Timer 2 channel 1 */
+	BEEP_LSClockToTIMConnectCmd(DISABLE);
+	/* Disable TIM2 clock */
+	CLK_PeripheralClockConfig(CLK_Peripheral_TIM2, DISABLE);
+	/* Disable BEEP clock to get write access for BEEP registers */
+	CLK_PeripheralClockConfig(CLK_Peripheral_BEEP, DISABLE);
+
+	//disableInterrupts(); //enable interrupts  
+	
+	RtcSetBaseTime(lsi_measured_frequency>>4);//prescale 16	
+	//rtc_1s = lsi_measured_frequency>>4;      //prescale 16
+	pSystemApiTagObj->SysRtcSleepTime = lsi_measured_frequency>>4;
+	
+	disableInterrupts(); //disable interrupts 
+}
+
+/**********************************************************************/
+//Name:			RtcWakeUpInit()
+//Description:															
+//Parameters:                        									
+//Return:   															
+//Date:           
+//Author:		quanwu.xu  
+/**********************************************************************/
+void RtcWakeUpInit(uint16_t WakeupCount)
+{
+	RTC_WakeUpCmd(DISABLE);
+	CLK_PeripheralClockConfig(CLK_Peripheral_RTC,ENABLE);
+
+	/* Configures the RTC wakeup timer_step = RTCCLK/16 = LSI/16 = 421.05263 us */
+	RTC_WakeUpClockConfig(RTC_WakeUpClock_RTCCLK_Div16);
+
+	/* Enable wake up unit Interrupt */
+	RTC_ITConfig(RTC_IT_WUT, ENABLE);
+
+	while(RTC_GetFlagStatus(RTC_FLAG_WUTWF)==RESET);            //wait until write allowed
+	/* RTC wake-up event every 5s (timer_step x (11874 + 1) )*/
+	RTC_SetWakeUpCounter(WakeupCount);
+	RTC_WakeUpCmd(ENABLE);
+
+}
+
+void RtcWakeUpReload(uint16_t WakeupCount)
+{
+	RTC_WakeUpCmd(DISABLE);
+	RTC_SetWakeUpCounter(WakeupCount);//(timer_step x (2048 + 1) )
+	RTC_WakeUpCmd(ENABLE);
+}
+
+/**********************************************************************/
+//Name:			SysClkConfig()
+//Description:															
+//Parameters:                        									
+//Return:   															
+//Date:           
+//Author:		quanwu.xu  
+/**********************************************************************/
+void SysClkConfig(void)
+{
+	/*High speed internal clock prescaler: 4*/
+	//CLK_SYSCLKDivConfig(CLK_SYSCLKDiv_4);   // 16M/4 = 4M
+
+	CLK_LSICmd(ENABLE);
+	while (CLK_GetFlagStatus(CLK_FLAG_LSIRDY) == RESET); 
+	CLK_RTCClockConfig(CLK_RTCCLKSource_LSI, CLK_RTCCLKDiv_1); 
+
+	CLK_HSICmd(ENABLE);
+	CLK_SYSCLKSourceConfig(CLK_SYSCLKSource_HSI);
+	CLK_SYSCLKDivConfig(CLK_SYSCLKDiv_4);				//4mhz for system clock
+	while (CLK_GetSYSCLKSource() != CLK_SYSCLKSource_HSI);
+}
+
+/**********************************************************************/
+//Name:			Timer4Config()
+//Description:															
+//Parameters:                        									
+//Return:   															
+//Date:           
+//Author:		quanwu.xu  
+/**********************************************************************/
+void Timer4Config(void)
+{
+	CLK_PeripheralClockConfig(CLK_Peripheral_TIM4, ENABLE); // TIM4 clock enable
+
+	TIM4_TimeBaseInit(TIM4_Prescaler_256,0x9c);// init timer 4 10ms inetrrupts
+	//TIM4_TimeBaseInit(TIM4_Prescaler_256,0x4e);// init timer 4 5ms inetrrupts
+
+	TIM4_ITConfig(TIM4_IT_Update,  ENABLE);
+
+	TIM4_Cmd(ENABLE);
+}
+
+/**********************************************************************/
+//Name:			GpioConfig()
+//Description:															
+//Parameters:                        									
+//Return:   															
+//Date:           
+//Author:		quanwu.xu  
+/**********************************************************************/
+void GpioConfig(void)
+{
+
+	//smoke
+	GPIO_Init(SMOKE_OP_CTR_PORT, SMOKE_OP_CTR_PIN, GPIO_Mode_Out_PP_Low_Slow);
+	SMOKE_OP_TURN_OFF();
+	GPIO_Init(SMOKE_IR_CTR_PORT, SMOKE_IR_CTR_PIN, GPIO_Mode_Out_PP_Low_Slow);
+	SMOKE_IR_TURN_OFF();
+	GPIO_Init(SMOKE_TEST_PORT, SMOKE_TEST_PIN, GPIO_Mode_Out_PP_Low_Slow);
+	SMOKE_TEST_TURN_OFF();
+
+	//temp
+	GPIO_Init(TEMP_CTR_PORT, TEMP_CTR_PIN, GPIO_Mode_Out_PP_Low_Slow);
+	TEMP_DETECT_OFF();
+	//bat
+	GPIO_Init(BAT_CTR_PORT, BAT_CTR_PIN, GPIO_Mode_Out_PP_Low_Slow);
+	BAT_DETECT_OFF();
+	//adc
+	GPIO_Init(SMOKE_IR_ADC_PORT, SMOKE_IR_ADC_PIN, GPIO_Mode_In_FL_No_IT);
+	GPIO_Init(TEMP_ADC_PORT, TEMP_ADC_PIN, GPIO_Mode_In_FL_No_IT);
+	GPIO_Init(BAT_ADC_PORT, BAT_ADC_PIN, GPIO_Mode_In_FL_No_IT);
+
+
+}
+
+
+
+/**********************************************************************/
+//Name:			GetAdcSample()
+//Description:																  
+//Parameters:                        												  
+//Return:   																  
+//Date:           
+//Author:		quanwu.xu  
+/**********************************************************************/
+uint16_t GetAdcSample(void)
+{ 
+	uint8_t i = 0;
+	uint16_t AdcValue=0;	
+
+	for(i=0;i<ADC_SAMPLE_TIMES;i++)
+	{ 
+		ADC_SoftwareStartConv(ADC1);
+		while(ADC_GetFlagStatus(ADC1, ADC_FLAG_EOC) == RESET);
+		ADC_ClearFlag(ADC1, ADC_FLAG_EOC);
+		AdcValue += ADC_GetConversionValue (ADC1);
+	}
+
+	AdcValue >>= 2;
+	return AdcValue;
+}
+
+/**********************************************************************/
+//Name:			GetTempData()
+//Description:																  
+//Parameters:                        												  
+//Return:   																  
+//Date:           
+//Author:		quanwu.xu  
+/**********************************************************************/
+#define Temp_ADC_CHANNEL ADC_Channel_18
+uint8_t GetTempData(void)
+{ 
+	uint8_t Index = 0;
+	uint16_t TempAdcValue = 0;
+
+
+	TEMP_DETECT_ON();
+	TempAdcValue = AdcGetChannelValue(ADC_SamplingTime_4Cycles,Temp_ADC_CHANNEL);
+	
+	//ADC_ChannelCmd(ADC1, ADC_Channel_18, DISABLE);  
+	TEMP_DETECT_OFF();	
+
+	while(TempAdcValue < NTC_Table[Index])
+	{
+		if(Index >= 90)
+		{
+			Index = 90;
+			break;
+		}
+		else
+		{
+			Index++;
+		}
+	}
+	SensorObject.Temp = Index;
+	#ifdef Debug_Test
+		//printf("adc=%d, T=%d\n", TempAdcValue, Index-20);
+		printflog("\nT:%dC\n",SensorObject.Temp-20);
+	#endif
+	
+	return Index;
+}
+
+uint8_t SensorGetTemperature(void)
+{
+    return SensorObject.Temp; 
+}
+
+
+/*****************************************************************************
+*å‡½æ•°åç§° : SensorTemperatureCheck
+*åŠŸèƒ½æè¿° : æ¸©åº¦æ•°æ®èŒƒå›´æ£€æµ‹
+*è¾“å…¥å‚æ•° ï¼š
+*è¿”å›žå‚æ•° :	Retï¼š 1æ­£å¸¸ 0é”™è¯¯
+*ä½¿ç”¨è¯´æ˜Ž : 
+*****************************************************************************/
+uint8_t SensorTemperatureCheck(void)
+{
+    uint8_t Ret=0;
+    uint8_t Temp = GetTempData();
+	//printf("Temp=%d\n",Temp);
+	if (Temp>TEMPERATURE_FACTORY_START&&Temp<TEMPERATURE_FACTORY_END)
+	{
+		Ret=1;
+	}
+	else
+	{
+		Ret=0;
+	}
+    return Ret;
+    
+}
+
+
+
+

@@ -1,0 +1,256 @@
+/****************************************************************************/
+/*	File   :             F:\Smoker\SC01study\trunks\src\LED\led.c               */
+/*	Author :                       songjiang                                */
+/*	Version:                          V1.0                                  */
+/*	Date   :                    2019/5/30,14:24:15                         */
+/********************************Modify History******************************/
+/*   yy/mm/dd     F. Lastname    Description of Modification                */
+/****************************************************************************/
+/*	Attention:                                                              */
+/*	CopyRight:                CopyRight 2017--2025                          */
+/*           Shenzhen Xiaojun Technology Co., Ltd.  Allright Reserved        */
+/*	Project :                      SC01                           */
+/****************************************************************************/
+
+
+/* Includes ------------------------------------------------------------------*/
+
+#include "led.h"
+//#include "lcd.h"
+//#include "rtc.h"
+#include "main.h"
+#include "polling.h"
+#include "SceneInstance.h"
+//#include "system.h"
+
+/* Private typedef -----------------------------------------------------------*/
+
+typedef struct LedTypeTag LedType;
+struct LedTypeTag{
+	eLed_State State;
+	GPIO_TypeDef *pPort;
+	uint8_t pin;
+};
+
+struct Led{
+	LedType  LedArr[LED_TYPE_MAX];
+};
+
+/* Private define ------------------------------------------------------------*/
+
+
+/* Private macro -------------------------------------------------------------*/
+
+/* Private variables ---------------------------------------------------------*/
+static LedTag LedObject = {{
+	{LED_OFF,RED_LED_PORT,RED_LED_PIN},
+	{LED_OFF,GREEN_LED_PORT,GREEN_LED_PIN},}
+	//{LED_OFF,YELLOW_LED_PORT,YELLOW_LED_PIN},},
+//	{LED_OFF,ESCAPE_LIGHT_PORT,ESCAPE_LIGHT_PIN},},
+	};
+
+
+static LedTag *pLedObject = NULL;
+
+/* Private function prototypes -----------------------------------------------*/
+void LedSetState(eLed_Type LedType, eLed_State State);
+
+
+/* Private functions ---------------------------------------------------------*/
+
+
+
+/**
+  * @brief  LED inital  
+  * @param  None
+  * @retval None
+  */
+LedTag * LedInit(void)
+{
+    uint8_t i = 0;
+	
+	if (NULL == pLedObject)
+	{
+		for (i = 0; i < LED_TYPE_YELLOW; ++i)//红绿组合灯
+		{
+			GPIO_Init(LedObject.LedArr[i].pPort, LedObject.LedArr[i].pin, GPIO_Mode_Out_PP_Low_Slow);
+			GPIO_ResetBits(LedObject.LedArr[i].pPort, LedObject.LedArr[i].pin);
+		}
+		pLedObject = &LedObject;
+		
+//		LedSetState(LED_TYPE_RED,LED_ON);
+//        DelayMs(100);
+//		LedSetState(LED_TYPE_RED,LED_OFF);	
+	}
+	else
+	{
+		;
+	}
+	
+	return pLedObject;
+}
+
+static void PollingLedOff(TmrHdl Handle, eTmrCmd eCmd)
+{       
+	TmrInfo* pLedTime = (TmrInfo*)Handle;
+	uint32_t  dLedType = (uint32_t)(pLedTime->pCtx);
+	eLed_Type LedType = (eLed_Type)(dLedType&0xff);
+	switch(eCmd)
+	{
+		case eTimeOut:
+			switch(LedType)
+			{
+		        case LED_TYPE_RED:
+				case LED_TYPE_GREEN:
+				case LED_TYPE_YELLOW:
+					LedSetState(LED_TYPE_RED, LED_OFF);
+					LedSetState(LED_TYPE_GREEN, LED_OFF);
+					//LedSetState(LED_TYPE_YELLOW, LED_OFF);
+					break;
+					
+				#ifdef SUPPORT_ESCAPE_LED_FUNCTION
+				case LED_TYPE_ESCAPE:
+					ESCAPE_LED_OFF();
+					break;
+				#endif
+				
+			}
+		    TmrDeleteTimer(Handle);
+		    //SystemClearActiveFlag(eActiveFlagLed);
+		    ResetSysSleepFlag(eActiveFlagLed);
+			//printf("Resete ActiveFlagLed\n");
+			break;
+			
+		default:
+			break;
+	}
+	//printf("%s LedType :%ld\n ",__FUNCTION__,(uint32_t)pLedTime->pCtx);
+} 
+
+void PollingLedGreen(TmrHdl Handle, eTmrCmd eCmd)
+{
+	uint16_t state = (uint16_t)TmrGetCtx(Handle);
+	
+	switch (eCmd)
+	{
+		case eTimeOut:
+			LedPollingHandle(LED_TYPE_GREEN,state);
+			ResetSysSleepFlag(eActiveFlagNetKeyTestGREENLED);
+			TmrDeleteTimer(Handle);
+			break;
+		
+		default:
+			break;
+	}		
+}
+
+
+void LedPollingHandle(eLed_Type LedType, uint32_t Time)
+{
+	if(SystemGetActiveFlag(eActiveFlagLed))
+	{
+		LedSetState(LED_TYPE_RED, LED_OFF);
+		LedSetState(LED_TYPE_GREEN, LED_OFF);
+		//LedSetState(LED_TYPE_YELLOW, LED_OFF);
+		#ifdef SUPPORT_ESCAPE_LED_FUNCTION
+		ESCAPE_LED_OFF();
+		#endif
+		TmrDeleteTimer(TmrGetHandleByEvent(GetTmrHd(),PollingLedOff));
+	}
+	//printf("LedType :%d\n ",LedType);
+	switch(LedType)
+	{
+        case LED_TYPE_RED:
+			LedSetState(LED_TYPE_RED, LED_ON);
+			
+			break;
+			
+		case LED_TYPE_GREEN:
+			LedSetState(LED_TYPE_GREEN, LED_ON);
+			break;
+			
+		case LED_TYPE_YELLOW:
+			//LedSetState(LED_TYPE_YELLOW, LED_ON);
+			LedSetState(LED_TYPE_RED, LED_ON);
+			LedSetState(LED_TYPE_GREEN, LED_ON);
+			break;
+
+		#ifdef SUPPORT_ESCAPE_LED_FUNCTION
+		case LED_TYPE_ESCAPE:
+			LCD_POWER_ON(); 						//LED power on
+			ESCAPE_LED_ON();
+			break;
+		#endif
+	}
+
+	TmrInsertTimer(GetTmrHd(), TMR_PERIOD(Time), PollingLedOff, (void *)LedType);
+	//SystemSetActiveFlag(eActiveFlagLed);
+	SetSysSleepFlag(eActiveFlagLed);
+	//printf("%s LedType :%d\n ",__FUNCTION__,LedType);
+}
+
+
+/******************************************************************************
+**Description:			LedSetState 															
+** Parameters:       pLed:LED AO POIONTER      LedType : which led  State :on/off/toggle        												
+**     Return:   			none														
+*******************************************************************************/
+void LedSetState(eLed_Type LedType, eLed_State State)
+{
+	 LedTag * pLed = &LedObject;
+	 switch (State)
+	 {
+			case LED_ON:
+				//LCD_POWER_ON(); 						//lcd power on
+				GPIO_SetBits(pLed->LedArr[LedType].pPort, pLed->LedArr[LedType].pin);
+				//printf("led on,%d\n",__LINE__);
+				break;
+				
+			case LED_OFF:
+				GPIO_ResetBits(pLed->LedArr[LedType].pPort,pLed->LedArr[LedType].pin);
+				//printf("led off,%d\n",__LINE__);
+				break;
+				
+			case LED_TOGGLE:
+				GPIO_ToggleBits(pLed->LedArr[LedType].pPort,pLed->LedArr[LedType].pin);
+				break;
+			
+			default:
+			//printf("Led unkown state\n");	
+				break;
+	 }
+	 pLed->LedArr[LedType].State = State;
+	 //printf("LedObject addr :%d,*pLed %d\n",&LedObject,*pLed);
+	 //printf("Led state :%d LedType :%d \n",State,LedType);
+}
+#if 0
+
+void LedTest(void)
+{
+	static eLed_Type i = LED_TYPE_RED;
+	static eLed_State x = LED_OFF;
+
+	if (i < LED_TYPE_MAX)
+	{ 
+		if (x < LED_TOGGLE)
+		{
+			LedSetState(&LedObject,i, x);
+		 	++x;
+		}
+		else
+		{
+			x = LED_OFF;
+			++i;
+		}	
+	}
+	else
+	{
+		i = LED_TYPE_RED;
+		x = LED_OFF;
+	}
+	//printf("%s,i = %d,x = %d\n",__FUNCTION__,i,x);	
+}
+#endif
+/********************END OF FILE**********************/
+
+

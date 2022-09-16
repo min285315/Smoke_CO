@@ -1,0 +1,99 @@
+#ifndef _SMOKE_H_
+#define _SMOKE_H_
+#include"main.h"
+
+//smoke
+#define CALI_FLAG_VALUE		((uint8_t)0x5B)
+#define FLASH_DATA_EEPROM_ADDR_CALI_FLAG				((uint16_t)0x1000)    
+#define FLASH_DATA_EEPROM_ADDR_SENSORTIV_DATA_MSB		((uint16_t)0x1001)  
+#define FLASH_DATA_EEPROM_ADDR_SENSORTIV_DATA_LSB		((uint16_t)0x1002) 
+#define FLASH_DATA_EEPROM_ADDR_TEMPTURE					((uint16_t)0x1003)
+#define FLASH_DATA_EEPROM_ADDR_VERIFY_BATTERY_MSB		((uint16_t)0x1004)
+#define FLASH_DATA_EEPROM_ADDR_VERIFY_BATTERY_LSB		((uint16_t)0x1005)
+
+#ifdef SUPPORT_2_3V_VDD
+#define DARK_AVERAGE_MAX				2137		// 1.2V
+#define DARK_AVERAGE_MIN 				268			// 150mv
+
+#define LIGHT_AVERAGE_MAX				3205		// 1.8v
+#define LIGHT_AVERAGE_MIN				1246		// 700mA
+
+#define LIGHT_DARK_DIFF					570			// 320mV
+#define LIGHT_DART_DIFF_ERR				410			// 200mV
+
+#define Dust_Test_Value					32
+
+#define BATTERY_LOW_ADC_VALUE		((uint16_t)2360)			// 1.325*2  = 2.65  V
+#define BATTERY_MID_ADC_VALUE		((uint16_t)2495)			// 2.8V
+#define BATTERY_VERIFY_ADC_VALUE	((uint16_t)2715)			// 1.525*2  = 3.05  V
+
+#elif defined(SUPPORT_2_5V_VDD)
+#define DARK_AVERAGE_MAX				800					// 800Mv
+#define DARK_AVERAGE_MIN 				149//245			// 150mv
+
+#define LIGHT_AVERAGE_MAX				2000				// 2.0v
+#define LIGHT_AVERAGE_MIN				700//1146			// 700mA
+
+#define LIGHT_DARK_DIFF					320//524			// 320mV
+#define LIGHT_DART_DIFF_ERR				200//327			// 200mV
+
+#define Dust_Test_Value					30
+/*
+#define BATTERY_LOW_ADC_VALUE		((uint16_t)2170)			// 1.325*2  = 2.65  V
+#define BATTERY_MID_ADC_VALUE		((uint16_t)2293)			// 2.8V
+#define BATTERY_VERIFY_ADC_VALUE	((uint16_t)2498)			// 1.525*2  = 3.05  V
+*/
+#define BATTERY_LOW_VALUE			((uint16_t)2650)			// 1.325*2  = 2.65  V
+#define BATTERY_MID_VALUE			((uint16_t)2800)			// 2.8V
+#define BATTERY_FACTORY_CHECK		((uint16_t)2900)			
+
+#endif
+
+
+typedef enum _eDevErrType{
+	eDevErrType_Null = 0,
+	eDevErrType_LowBat,
+	eDevErrType_DevErr,
+}eDevErrType;
+	typedef enum _eSmokeState
+	{
+		eSmokeState_Null = 0,
+		eSmokeState_DevErr,
+		eSmokeState_Test,
+		eSmokeState_Alarm,
+		eSmokeState_Mute,
+		eSmokeState_TestByUart,
+		eSmokeState_AlarmByUart,
+		eSmokeState_MuteByUart,
+	}eSmokeState;
+
+
+
+
+uint8_t SensorGetTemperature(void);
+
+bool CheckSmokerAlarm(bool KeyTestFlag,bool QuicklyFlag);
+
+//eBatLevel CheckBatteryLevel(void);
+void SoundAndLightFunc(eDevErrType Type);
+void SysSmokeCailModeHandleEvent(SystemApiTag  *me, QEvent *e);
+void SysSmokeAlarmModeEvent(SystemApiTag  *me,QEvent *e);
+void SysSmokeTestModeEvent(SystemApiTag  *me,QEvent *e);
+void SysSmokeDevErrModeHandleEvent(SystemApiTag  *me, QEvent *e);
+void SmokeKeyTestDelay(void);
+void SmokeKeyTest(void);
+void SystemSmokeError(SystemApiTag  *me,QEvent *e);
+eSmokeState GetSmokeState(void);
+void SmokeStateInit(void);
+void SensorErrUpdata(void);
+
+
+#ifdef SUPPORT_RF_NET_FUNCTION
+void NetSmokeAlarm(SystemApiTag  *me,QEvent *e);
+
+
+#endif
+
+
+#endif
+

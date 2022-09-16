@@ -1,0 +1,6 @@
+qeq_fifo.pbi: E:\SVNOutPutlocaldisk\SC200-WT\Code\middleWare\qeq_fifo.c \
+  E:\SVNOutPutlocaldisk\SC200-WT\IAR\..\Code\inc\qep_pkg.h \
+  E:\SVNOutPutlocaldisk\SC200-WT\IAR\..\Code\inc/qep_port.h \
+  E:\SVNOutPutlocaldisk\SC200-WT\IAR\..\Code\inc/qep.h \
+  E:\SVNOutPutlocaldisk\SC200-WT\IAR\..\Code\inc/qequeue.h \
+  E:\SVNOutPutlocaldisk\SC200-WT\IAR\..\Code\inc\qassert.h

@@ -1,0 +1,1658 @@
+#include "main.h"
+#include "base.h"
+#include "wifi.h"
+#include "WiFiUpdata.h"
+#include "protocol.h"
+
+#include "module.h"
+
+#include "SceneInstance.h"
+
+/* Private define ------------------------------------------------------------*/
+#define SYSTEM_TIMEOUT_TIME         	(10800000)//3h
+#define SYSTEM_TIMEOUT_NUM         	    (1)//3(1+Num)
+#define SYSTEM_LED_TIME         		(500)
+#define SYSTEM_SMOKE_CHECK_TIME         (3000)
+#define STANDBY_MODE_CYCLE_COUNT        (6)   //
+#define KEY_TEST_DELAY_TIME             (1)//S
+#define ENDLIFE_MODE_CYCLE_COUNT        (6)  
+#define MainTaskQueue_Length            (10)
+
+
+
+static QEvent MainEvent;
+SystemApiTag SystemApiTagObj;
+SystemApiTag *pSystemApiTagObj = &SystemApiTagObj;
+
+static QEvent const *SystemQueueSto[MainTaskQueue_Length];//  n event for this queue
+static SystemQueueTag SystemQueueAo[MainTaskQueue_Length]={0};//  n event for this queue
+
+//void SystemStartHandle(SystemApiTag  *me,QEvent *e);
+
+/**********************************************************************/
+//Name:			PrintfVersion()
+//Description:																  
+//Parameters:                        												  
+//Return:   																  
+//Date:           
+//Author:		quanwu.xu  
+/**********************************************************************/
+static void PrintfVersion(void)
+{
+	printf("\n[Aegislink]\n");
+	printf("%s %s\n",DeviceName ,SoftWareVer);
+	
+	#ifdef SUPPORT_EN50291_EN14604
+	printf("\nStandard: EN50291_EN14604\n");
+	#elif(defined SUPPORT_UL2034_UL217)
+	printf("\nStandard: UL2034_UL217\n");
+	#endif
+	
+}
+
+/**********************************************************************/
+//Description:  SysTickAdd()											
+//Parameters:                        									
+//Return:   															
+//Date:         2019-01-08
+//Author:		quanwu.xu  
+/**********************************************************************/
+void SysTickAdd(void)
+{
+    SystemApiTagObj.SystemTick++;
+}
+
+/**********************************************************************/
+//Description:  	SysGetTicks()														  
+//Parameters:                        												  
+//Return:   																  
+//Date:         	2019-01-08
+//Author:		quanwu.xu  
+/**********************************************************************/
+/*
+static uint32_t SysGetTicks(void)
+{
+	uint32_t Ret = 0;
+	static uint32_t lastTick10ms = 0;
+	uint32_t tick = pSystemApiTagObj->SystemTick;
+	uint32_t dTick = (tick>=lastTick10ms)?(tick-lastTick10ms):(SYSTEMTICKS-lastTick10ms+tick);
+	if (dTick < 1)
+	{   
+		Ret = 0;
+	}
+	else
+	{ 
+
+		Ret = dTick;
+		lastTick10ms = pSystemApiTagObj->SystemTick;
+	}
+	return (Ret);
+}
+*/
+uint32_t SystemGetTick(void)
+{
+	return SystemApiTagObj.SystemTick;
+}
+/******************************************************************************
+**Description:					SystemGetIdleNUm    10s													
+** Parameters:                        none												
+**     Return:   					sleep counter 												
+*******************************************************************************/
+uint32_t SystemGetIdleNUm(void)
+{
+	return SystemApiTagObj.SlpTimeCnt;
+	
+}
+/******************************************************************************
+**Description:		 	SystemGetLifeDays															
+** Parameters:             none           												
+**     Return:   		LifeTimeDays														
+*******************************************************************************/
+uint16_t SystemGetLifeDays(void)
+{
+	return SystemApiTagObj.LifeTimeDays;
+}
+
+#ifdef SUPPORT_NET_FUNCTION
+/******************************************************************************
+**Description:			IsNetEnable															
+** Parameters:          none              												
+**     Return:   		NetModeFlag   0: colse  rf  1: open rf															
+*******************************************************************************/
+
+uint8_t IsNetEnable(void)
+{
+	return SystemApiTagObj.NetModeFlag;
+}
+
+/******************************************************************************
+**Description:			IsRFNetEnable															
+** Parameters:          none              												
+**     Return:   		NetModeFlag   0: colse  rf  1: open rf															
+*******************************************************************************/
+
+uint8_t SystemGetNetMode(void)
+{	
+	return SystemApiTagObj.NetModeFlag;
+}
+
+/******************************************************************************
+**Description:																		
+** Parameters:                        												
+**     Return:   																	
+*******************************************************************************/
+
+void SetNetConfig(uint8_t Flag)
+{
+	 SystemApiTagObj.NetModeFlag = Flag;
+	 FlashSetNetState(Flag);
+}
+
+#endif
+
+void IwdgConfig(void)
+{  
+  /* Enable IWDG (the LSI oscillator will be enabled by hardware) */
+  IWDG_Enable(); 
+
+  /* Enable write access to IWDG_PR and IWDG_RLR registers */
+  IWDG_WriteAccessCmd(IWDG_WriteAccess_Enable);
+  
+  /* IWDG configuration: IWDG is clocked by LSI = 38KHz */
+  IWDG_SetPrescaler(IWDG_Prescaler_256);
+  
+  /* IWDG timeout = (RELOAD_VALUE + 1) * Prescaler / LSI 
+                  = (254 + 1) * 256 / 38 000 
+                  = 1717.8 ms */
+  IWDG_SetReload((uint8_t)RELOAD_VALUE);
+  
+  /* Reload IWDG counter */
+  IWDG_ReloadCounter();
+}
+
+
+/**********************************************************************/
+//Name:			DeviceInit()
+//Description:																  
+//Parameters:                        												  
+//Return:   																  
+//Date:           
+//Author:		quanwu.xu  
+/**********************************************************************/
+void DeviceInit(void)
+{
+	LsiMeasurment();
+	SysClkConfig();
+	disableInterrupts();
+	Timer4Config();
+	PollingModuleInit();
+
+}
+
+
+/******************************************************************************
+**Description:			 SytemTimeOutHandle		 24h  no idle													
+** Parameters:                        												
+**     Return:   																	
+*******************************************************************************/
+
+void SytemTimeOutHandle(TmrHdl Handle, eTmrCmd eCmd)
+{
+	Handle = Handle;
+    static uint8_t i = 0;
+	
+	switch(eCmd)
+	{
+		case eTimeOut:
+			if (i<SYSTEM_TIMEOUT_NUM)
+			{		
+				i++;
+			}
+			else
+			{
+				i = 0;	
+				while(1);
+			}
+			break;
+			
+		case eDelTimer:
+			i = 0;	
+			break;
+		
+		default:
+			break;
+	}
+}
+
+static void SetupUnusedGpio(void) 
+{
+	// unused gpio 
+	/*PA2 3*/
+	GPIO_Init(GPIOA, GPIO_Pin_2|GPIO_Pin_3, GPIO_Mode_Out_PP_Low_Slow);
+	GPIO_ResetBits(GPIOA, GPIO_Pin_2|GPIO_Pin_3);
+
+	/*PC0 1 6*/
+	GPIO_Init(GPIOC, GPIO_Pin_0|GPIO_Pin_1|GPIO_Pin_6, GPIO_Mode_Out_PP_Low_Slow);
+	GPIO_ResetBits(GPIOC, GPIO_Pin_0|GPIO_Pin_1|GPIO_Pin_6);
+
+	/*PE2 7*/
+	GPIO_Init(GPIOE, GPIO_Pin_2|GPIO_Pin_7, GPIO_Mode_Out_PP_Low_Slow);//
+	GPIO_ResetBits(GPIOE, GPIO_Pin_2|GPIO_Pin_7);
+
+	/*PD7*/
+	GPIO_Init(GPIOD, GPIO_Pin_7, GPIO_Mode_Out_PP_Low_Slow);
+	GPIO_ResetBits(GPIOD, GPIO_Pin_7);
+
+	#ifdef	SoftWareVer_SC200
+	/*独立款关闭RF wifi*/
+	GPIO_Init(GPIOC, GPIO_Pin_4, GPIO_Mode_In_PU_No_IT);//wifi power
+
+	#elif	(defined SoftWareVer_SC200_WR)
+	/*RF款关闭 wifi*/
+	GPIO_Init(GPIOC, GPIO_Pin_4, GPIO_Mode_In_PU_No_IT);//wifi power
+	
+	#elif	(defined SoftWareVer_SC200_WT)
+	/*WIFI款关闭 rf*/
+	GPIO_Init(GPIOE, GPIO_Pin_7, GPIO_Mode_Out_PP_Low_Slow);//rf it
+	GPIO_ResetBits(GPIOE, GPIO_Pin_7);
+	
+	#endif
+
+}
+
+
+/******************************************************************************
+**Description:				SystemPowerConsumptionCheck		 for factory test power custom												
+** Parameters:                none
+**     Return:   				none
+*******************************************************************************/
+static void SystemPowerConsumptionCheck(void)
+{
+	GPIO_Init(GPIOA, GPIO_Pin_0, GPIO_Mode_In_PU_No_IT); // for test point
+	Delay(5);
+ 	if(GPIO_ReadInputDataBit(GPIOA, GPIO_Pin_0) == RESET) 
+	{
+		DelayMs(10);
+		if(GPIO_ReadInputDataBit(GPIOA, GPIO_Pin_0) == RESET)
+		{
+			
+			SystemApiTagObj.PowerConsumptionCheckFlag = SET;
+		}
+	}
+	GPIO_Init(GPIOA, GPIO_Pin_0, GPIO_Mode_Out_PP_Low_Slow);
+	GPIO_ResetBits(GPIOA, GPIO_Pin_0);
+}
+
+
+
+
+/**********************************************************************/
+//Description:	SysApiInit()															  
+//Parameters:                        												  
+//Return:   																  
+//Date:           
+//Author:		quanwu.xu  
+/**********************************************************************/
+static void SystemApiInit(SystemApiTag *me, QEvent const *e)
+{
+	Q_REQUIRE(e != (QEvent const *)0);     /* initialization event expected */
+	//uint16_t rtc = RtcGetBaseTime();
+	IwdgConfig();
+	RtcWakeUpInit(RTC_SLEEP_TIME_10s);
+	UsartConfig();
+	#ifdef SUPPORT_UART_DMA_FUNCTION
+		DMAConfigForUart();  //DMA uart open
+	#endif
+	PrintfVersion();
+	GpioConfig();	
+	#ifdef SUPPORT_LCD_FUNCTION
+		LcdInit();//lcdinit   
+	#endif
+	FlashInit();  		// FLASH FOR RESTORE
+	
+	LedInit();//led init
+	SetupUnusedGpio();	   //unused gpio setup	
+	BeepInit();	
+	KeyInit();
+	SmokeStateInit();
+	#ifdef SUPPORT_CO_FUNCTION
+		COInit();//CO
+	#endif
+
+	BatteryInit();		
+	#ifdef SUPPORT_NET_FUNCTION
+		me->NetModeFlag = FlashGetNetState();	
+		NetInit();
+		#if 1//def SUPPORT_SYSTEM_MODE_DEBUG
+		printf("NetModeFlag=%d,\n",me->NetModeFlag);
+		#endif
+	#endif
+	me->SystemTick = 0;
+	me->pEventPoll = (QEvent  *)SystemQueueAo;
+	me->SysActiveFlag = eSysActiveFlag_NULL;
+	me->SysMode = eSystemMode_Idle;
+	me->SysRtcSleepTime = RTC_SLEEP_TIME_10s;
+	me->LowPwrSilenceFlag = 0;
+	me->LowPwrSilence = 0;
+	me->SilenceTime = 0;
+	me->LowBatCnt = 0;
+	me->LifeTimeDays = FlashGetLifeTime();
+	me->PowerConsumptionCheckFlag = RESET;
+	me->SlpTimeCnt = 0;
+	SystemApiTagObj.LcdSwitchFlag = RESET;
+    GetTempData();
+	SystemPowerConsumptionCheck();
+	
+	QEQueue_init(&me->eQueue__, SystemQueueSto, Q_DIM(SystemQueueSto)); //QUEUE FOR EVENT	
+	enableInterrupts(); 	//Enable global interrupts	
+	TmrInsertTimer(GetTmrHd(), TMR_PERIOD(SYSTEM_TIMEOUT_TIME), SytemTimeOutHandle, NULL);//3h 没进入待机则清除待机标志
+	
+	#ifdef SUPPORT_NET_FUNCTION
+	if(!GPIO_ReadInputDataBit(KEY1_PORT, KEY1_PIN))
+	{
+		DelayMs (50);
+		if(!GPIO_ReadInputDataBit(KEY1_PORT, KEY1_PIN))
+		{
+			//SetNetConfig(ePairedIntranet);
+			Q_INIT(&NETFactoryMode);    		// init
+		}
+
+	}else
+	#endif
+	{
+		Q_INIT(&SysSmokeCailModeHandleEvent);
+			
+	}
+
+	
+}
+
+/**********************************************************************/
+//Description:	SetSysSleepFlag()															  
+//Parameters:                        												  
+//Return:   																  
+//Date:           
+//Author:	quanwu.xu  
+/**********************************************************************/
+void SetSysSleepFlag(eSysActiveFlag Flag)
+{
+	pSystemApiTagObj->SysActiveFlag |= Flag;
+}
+
+/**********************************************************************/
+//Description:	ResetSysSleepFlag()															  
+//Parameters:                        												  
+//Return:   																  
+//Date:           
+//Author:	quanwu.xu  
+/**********************************************************************/
+void ResetSysSleepFlag(eSysActiveFlag Flag)
+{
+	pSystemApiTagObj->SysActiveFlag &= ~Flag;
+}
+
+/**********************************************************************/
+//Description:	GetSysSleepFlag()															  
+//Parameters:                        												  
+//Return:   																  
+//Date:           
+//Author:	quanwu.xu  
+/**********************************************************************/
+uint32_t GetSysSleepFlag(void)
+{
+	return pSystemApiTagObj->SysActiveFlag;
+}
+
+
+
+
+/**********************************************************************/
+//Description:	SystemCtor()												
+//Parameters:                        										
+//Return:   																
+//Date:			2020/08/31
+//Author:		quanwu.xu  
+/**********************************************************************/
+static void SystemCtor(SystemApiTag  *me, QState SysInitPort)
+{
+	DeviceInit();
+	QFsm_ctor_(&me->super_, SysInitPort);	   /* superclass ctor */
+}
+
+/*********************************************** ***********************/
+//Description:	SystemPostFifo()										
+//Parameters:                        									
+//Return:   															
+//Date:           
+//Author:		song.jiang
+/**********************************************************************/
+static QEvent  *MainGetQueue(void)
+{
+	uint8_t i = 0;
+	QEvent  *e = NULL;
+	SystemQueueTag *qQue = (SystemQueueTag *)(SystemApiTagObj.pEventPoll);
+	for(i=0;i<MainTaskQueue_Length;i++)
+	{
+		if(0==qQue[i].atrr)
+		{
+			e = (QEvent  *)&qQue[i];
+			qQue[i].atrr = 1;
+			break;
+		}
+	}
+	
+	if(i>=MainTaskQueue_Length)
+	{
+		e = (QEvent  *)&qQue[0];
+		qQue[0].atrr = 1;
+	}
+	return e;
+}
+
+/**********************************************************************/
+//Description:	SystemPostFifo()										
+//Parameters:                        									
+//Return:   															
+//Date:           
+//Author:		song.jiang
+/**********************************************************************/
+static void MainFreeQueue( SystemQueueTag  *e)
+{
+	e->atrr = 0;	
+}
+
+/**********************************************************************/
+//Description:	SystemPostFifo()										
+//Parameters:                        									
+//Return:   															
+//Date:           
+//Author:		quanwu.xu  
+/**********************************************************************/
+void SystemPostFifo(QEvent const *pEvt)
+{
+	QEvent *des = MainGetQueue();
+	des->sig = pEvt->sig;
+	des->attrQF__ = pEvt->attrQF__;
+	QEQueue_postFIFO(&SystemApiTagObj.eQueue__,des);
+}
+
+
+
+/******************************************************************************
+**Description:				 led flick for idle and low battery														
+** Parameters:                 none       												
+**     Return:   			   none													
+*******************************************************************************/
+
+static void LedFlickerCheck(void)
+{    
+    if(( SystemApiTagObj.SlpTimeCnt%STANDBY_MODE_CYCLE_COUNT) == (STANDBY_MODE_CYCLE_COUNT-1))      //led cycle 60s锛?锛歠or check no same time
+    {        
+		if(IsLowPwrErr())
+		{
+			MainEvent.sig = Q_eSystemEventLowBat;
+			SystemPostFifo(&MainEvent);
+
+		}else
+		{		
+			GREEN_LED_ON();
+			DelayMs(3);
+			GREEN_LED_OFF();
+		}
+		SensorTemperatureCheck();
+    }	
+}
+/******************************************************************************
+**Description:				update system time for seconds														
+** Parameters:                       none 												
+**     Return:   					 none											
+*******************************************************************************/
+
+void SysTimeUpdate(void)
+{
+	SystemApiTagObj.SlpTimeCnt++;
+	#ifdef	SUPPORT_WIFI_NET_FUNCTION	
+	WiFiCheckOneDay(SystemApiTagObj.SlpTimeCnt);
+	#endif
+	
+	if(SystemApiTagObj.SlpTimeCnt%SYSTEM_ONE_DAY_COUNT==(SYSTEM_ONE_DAY_COUNT-1))
+	{
+		SystemApiTagObj.LifeTimeDays++;
+		FlashSetLifeTime(SystemApiTagObj.LifeTimeDays);
+		if(SystemApiTagObj.LifeTimeDays>=LIFE_TIME)
+		{
+			MainEvent.sig = eSystemEventEndLife;//for system start
+			SystemPostFifo(&MainEvent);	
+			if(SystemApiTagObj.LifeTimeDays>=LIFE_TIME+LIFE_TIME_MUTE)
+			{
+				SystemApiTagObj.DeviceState = eDeviceEndofLife;
+			}
+			else
+			{
+				if(SystemApiTagObj.DeviceState != eDevicePreEndofLifeMute)
+				{
+					SystemApiTagObj.DeviceState = eDevicePreEndofLife;
+				}else
+				{
+				}
+			}
+		}
+		SystemApiTagObj.SlpTimeCnt = 0;
+	}
+}
+
+
+/**********************************************************************/
+//Name:			EnterActiveHaltMode()
+//Description:																  
+//Parameters:                        												  
+//Return:   																  
+//Date:           
+//Author:		quanwu.xu  
+/**********************************************************************/
+
+void EnterActiveHaltMode()
+{	
+	IWDG_ReloadCounter();
+	RTC_WakeUpCmd(ENABLE);   
+	PWR_UltraLowPowerCmd(ENABLE);
+	PWR_FastWakeUpCmd(ENABLE);
+	halt();
+
+}
+
+
+uint32_t SystemGetActiveFlag(uint32_t Flag)
+{
+	//return SystemApiTagObj.SysActiveFlag&Flag;
+	return pSystemApiTagObj->SysActiveFlag&Flag;
+}
+
+static void PollingKeyTestEndLcdOffDelay(TmrHdl Handle, eTmrCmd eCmd)
+{
+	switch(eCmd)
+	{
+		case eTimeOut:
+			TmrDeleteTimer(Handle); 			
+			MainEvent.sig = eSystemEventKeyTtestOver;//
+			SystemPostFifo(&MainEvent);
+			break;
+			
+		case eDelTimer:
+			break;	
+			
+		default:
+			break;
+	}
+}
+static void PollingKeyTestCoTestOverDelay(TmrHdl Handle, eTmrCmd eCmd)
+{
+	switch(eCmd)
+	{
+		case eTimeOut:
+			TmrDeleteTimer(Handle); 			
+			MainEvent.sig = eSystemEventKeyTtestCoTestOver;//
+			SystemPostFifo(&MainEvent);
+			break;
+			
+		case eDelTimer:
+			break;	
+			
+		default:
+			break;
+	}
+}
+
+
+
+
+/******************************************************************************
+**Description:			 start led index 8 times															
+** Parameters:                        												
+**     Return:   																	
+*******************************************************************************/
+
+void PollingStartNormal(TmrHdl Handle, eTmrCmd eCmd)
+{
+	Handle = Handle;
+    static uint8_t i=0;
+	static uint8_t j=0;
+	static uint8_t k= 24;
+
+	switch(eCmd)
+	{
+		case eInsertTimer:
+			SystemPolling();
+			#ifdef SUPPORT_SYSTEM_MODE_DEBUG
+			printf("Insert=%s ,%d\n",__FUNCTION__,__LINE__);
+			#endif		
+			#ifdef SUPPORT_LCD_FUNCTION
+			LCD_BackLightControl(eLcdBackLightON);
+			LCD_Clear();
+			#endif
+			BeepPollingHandle(100);//start beep
+			
+			break;
+			
+		case eTimeOut:
+			if (i<31)
+			{
+				if(j%3==0)
+				{
+					#ifdef SUPPORT_LCD_FUNCTION
+					LCD_Clear();
+					#endif
+				}
+				if(i%4==3)
+				{
+
+				}
+				else
+				{
+					#ifdef SUPPORT_LCD_FUNCTION
+					LCD_SystemStartAnimation(j%3);//
+					#endif
+					LedPollingHandle((eLed_Type)((k+2-j)%3), SYSTEM_LED_TIME);	
+					j++;
+				}
+				i++;
+			}
+			else
+			{
+				if(i>0 ||j>0 ||k>0)
+				{
+					i = 0;	
+					j = 0;
+					k = 0;					
+				}
+				#ifdef SUPPORT_LCD_FUNCTION
+				LCD_Control(eLcdON);
+				LCD_BackLightControl(eLcdBackLightOFF);
+				LCD_DisplayCoData(0);
+				LCD_DisplayBatteryData(GetBatteryState());				
+				LCD_DsiplayCoFlg(eLcdON);
+				
+				#endif
+				TmrDeleteTimer(Handle);
+				MainEvent.sig = eSystemEventStartAnimationEnd;//for system start
+				SystemPostFifo(&MainEvent);
+			}
+			break;
+			
+		case eDelTimer:
+			break;
+		
+		default:
+			break;
+	}
+}
+
+
+/******************************************************************************
+**Description:				product power on start index														
+** Parameters:                     object and event   												
+**     Return:   						none											
+*******************************************************************************/
+
+void SystemStartHandle(SystemApiTag  *me,QEvent *e)
+{
+	switch (e->sig)
+	{
+		case Q_ENTRY_SIG:
+			#ifdef Debug_Test
+			printf("%s in,%d\n",__FUNCTION__,__LINE__);
+			#endif
+			CheckWiFi(&SystemApiTagObj);
+			if(SystemApiTagObj.PowerConsumptionCheckFlag||RST_GetFlagStatus(RST_FLAG_IWDGF))
+			{
+				printf("/********Go to stanby!********/\r\n");
+				LCD_Clear();
+				LCD_Control(eLcdON);
+				LCD_BackLightControl(eLcdBackLightOFF);
+				LCD_DisplayCoData(0);
+				LCD_DisplayBatteryData(GetBatteryState());				
+				LCD_DsiplayCoFlg(eLcdON);
+				SystemApiTagObj.PowerConsumptionCheckFlag = RESET;
+				MainEvent.sig = eSystemEventSkipStart;//for system start
+				SystemPostFifo(&MainEvent);
+			}
+			else
+			{
+				printf("/********System normal start********/\r\n");
+				TmrInsertTimer(GetTmrHd(), TMR_PERIOD(SYSTEM_LED_TIME), PollingStartNormal, NULL);
+				//SystemSetActiveFlag(eActiveFlagLcd);
+				SetSysSleepFlag(eActiveFlagLcd);
+				SystemApiTagObj.DeviceState = eDeviceStarting;
+			}
+			break;
+			
+		case Q_EXIT_SIG:
+			#ifdef Debug_Test
+			printf("%s out,%d\n",__FUNCTION__,__LINE__);
+			#endif
+			
+			ResetSysSleepFlag(eActiveFlagLcd);
+			SystemApiTagObj.DeviceState = eDeviceOK;
+
+			//SystemApiTagObj.UartEnableFlag = RESET;
+			COSetPeakData(FlashGetCoData());
+			break;
+
+		case eSystemEventStartAnimationEnd:
+			MainEvent.sig = eSystemEventStartIndexEnd;//
+			WifiInit();
+			DelayMs(1000);
+			SystemPolling();
+			G_LED_TURN_OFF();
+			SystemPostFifo(&MainEvent);
+			break;
+
+		case eSystemEventStartIndexEnd:
+			#ifdef Support_systemstart_debug
+			printf("eSystemEventStartIndexEnd, %s, %d\r\n",__FUNCTION__,__LINE__);
+			#endif
+			Q_TRAN(SysIdleModeHandleEvent);		
+			break;
+			
+		case eSystemEventSkipStart:
+			Q_TRAN(&SysIdleModeHandleEvent);  //go to Stanby
+			break;
+
+		default:
+			break;
+	}
+
+}
+static void PollingKeyTestSmokeTestOverDelay(TmrHdl Handle, eTmrCmd eCmd)
+{
+	switch(eCmd)
+	{
+		case eTimeOut:
+			TmrDeleteTimer(Handle); 			
+			MainEvent.sig = eSystemEventKeyTtestSmokeTestOver;//
+			SystemPostFifo(&MainEvent);
+			break;
+			
+		case eDelTimer:
+			break;	
+			
+		default:
+			break;
+	}
+}
+
+/******************************************************************************
+**Description:			for led and beep control															
+** Parameters:             led type on/off flag and num,time           												
+**     Return:   				none													
+*******************************************************************************/
+
+static void EndLifeIndex(uint8_t LedFlag,eLed_Type LedType,uint8_t BeepFlag,uint8_t Num,uint8_t Time)
+{	
+	uint8_t i=0;
+	for(i=0; i<Num; i++)			//beep num times
+	{
+		if(LedFlag)
+		{
+			if (LedType == LED_TYPE_YELLOW)
+			{
+				LedSetState(LED_TYPE_RED, LED_ON);
+				LedSetState(LED_TYPE_GREEN, LED_ON);
+			}
+			else
+			{
+				LedSetState(LedType,LED_ON);	
+			}
+					
+		}
+		if(BeepFlag)
+		{
+			BeepSetState(eBeepOn);
+		}
+		DelayMs(Time);//20
+		if(LedFlag)
+		{
+			if (LedType == LED_TYPE_YELLOW)
+			{
+				LedSetState(LED_TYPE_RED, LED_OFF);
+				LedSetState(LED_TYPE_GREEN, LED_OFF);
+			}
+			else
+			{
+				LedSetState(LedType,LED_OFF);	
+			}
+		}
+		if(BeepFlag)
+		{
+			BeepSetState(eBeepOff);			
+		}				
+		DelayMs(5*Time);		// 100ms
+		IWDG_ReloadCounter();
+	}
+}
+
+static void LedLowPwrFlickerCheck(void)
+{    
+    //if(( SystemApiTagObj.SlpTimeCnt%STANDBY_MODE_CYCLE_COUNT) == (STANDBY_MODE_CYCLE_COUNT-1))
+	if(( SystemApiTagObj.LowBatCnt%STANDBY_MODE_CYCLE_COUNT)== (STANDBY_MODE_CYCLE_COUNT-1))
+	{    
+    	if(IsLowPwrErr())
+		{
+			if(SystemApiTagObj.LowPwrSilenceFlag)
+			{			
+				if(SystemApiTagObj.LowPwrSilence>=LOW_BATTERY_MUTE_TIME)
+				{
+					SystemApiTagObj.LowPwrSilenceFlag = 0;
+					SystemApiTagObj.LowPwrSilence = 0;
+					EndLifeIndex(1,LED_TYPE_YELLOW,0,1,50);
+				}else
+				{
+					SystemApiTagObj.LowPwrSilence++;
+					EndLifeIndex(1,LED_TYPE_YELLOW,0,1,50);//
+				}
+			}else
+			{		
+				LedPollingHandle(LED_TYPE_YELLOW, 100);	
+				BeepPollingHandle(100); 
+			}
+			
+		}
+		else
+		{
+			SetBatteryLowState(1);
+			MainEvent.sig = eSystemEventLowPwrCancel;
+			SystemPostFifo(&MainEvent);
+		}
+		
+		SensorTemperatureCheck();
+    }
+	
+	if(SystemApiTagObj.LowBatCnt++ >= STANDBY_MODE_CYCLE_COUNT-1)
+	{
+		SystemApiTagObj.LowBatCnt = 0;
+		
+	}
+}
+
+/******************************************************************************
+**Description:			key test state handle															
+** Parameters:            object and event        												
+**     Return:   			 none														
+*******************************************************************************/
+
+#ifdef GETPEAK
+static void Peak_Display_Delay(TmrHdl Handle, eTmrCmd eCmd)
+{
+	static u8 i=0;
+
+	switch(eCmd)
+	{
+      case eTimeOut:
+	  	if(!GPIO_ReadInputDataBit(KEY1_PORT, KEY1_PIN))//Key Press
+		{
+			i=0;
+		}
+		
+		if(i++>4)
+		{
+			TmrDeleteTimer(Handle);
+			ResetSysSleepFlag(eActiveFlagPeakDisplayDelay);
+			MainEvent.sig = eSystemEventPeakDisplay;
+			SystemPostFifo(&MainEvent);
+		}
+		break;
+      case eDelTimer:
+      i=0;
+      break;
+    default:
+      break;
+    }
+}
+
+
+
+void SystemPeakDisplayHandle(SystemApiTag  *me,QEvent *e)
+{	
+	static uint8_t ClearOneTime = 0;
+
+	switch (e->sig)
+	{	
+	case Q_ENTRY_SIG:
+		printf("%s__Q_ENTRY_SIG__,%d\r\n",__FUNCTION__,__LINE__);
+		#ifdef SUPPORT_LCD_FUNCTION
+		LCD_BACK_LIGHT_ON();
+		ClearOneTime=1;
+			
+				LcdDisplayPoint(eLcdPointON,LCD_PEAK_COM,LCD_PEAK_SEG);
+				LCD_DisplayNum(COGetPeakData());
+			
+		TmrInsertTimer(GetTmrHd(), TMR_PERIOD(1000), Peak_Display_Delay, NULL);
+		SetSysSleepFlag(eActiveFlagPeakDisplayDelay);
+			
+		#endif
+		break;
+		
+	case Q_EXIT_SIG:
+		#ifdef SUPPORT_LCD_FUNCTION
+		LCD_BACK_LIGHT_OFF();//�رձ���
+		#endif
+		break;
+	case Q_eKeyEventKey1LongClik:	// for	delete Peak
+		if(ClearOneTime)
+		{
+			ClearOneTime=0;
+			LedPollingHandle(LED_TYPE_GREEN, 50);
+			BeepPollingHandle(50);
+			COSetPeakData(0);
+			FlashSetCoData(COGetPeakData());
+			LCD_DisplayNum(COGetPeakData());
+		}
+		break;
+    case eSystemEventPeakDisplay:
+		#ifdef SUPPORT_LCD_FUNCTION	
+		LCDStandyDisplay();
+		#endif
+//      MainEvent.sig = eSystemEventLcdUpdate;
+//      SystemPostFifo(&MainEvent);
+      Q_TRAN(SysIdleModeHandleEvent);
+      break;
+	default:
+		break;
+	}
+}
+
+#endif
+
+
+
+
+/******************************************************************************
+**Description:			key test state handle															
+** Parameters:            object and event        												
+**     Return:   			 none														
+*******************************************************************************/
+void SystemKeyTestHandle(SystemApiTag  *me,QEvent *e)
+{	
+	static uint16_t i = 0;
+	
+	
+	switch (e->sig)
+	{	
+		case Q_ENTRY_SIG:
+			#ifdef Debug_Test
+				printflog("in, %s ,%d\r\n",__FUNCTION__,__LINE__);
+			#endif
+			SetSysSleepFlag(eActiveFlagKeyTest);		
+			#ifdef SUPPORT_LCD_FUNCTION
+			LCD_BackLightControl(eLcdBackLightON);//
+			#endif
+			#ifdef SUPPORT_SMOKE_FUNCTION
+			SmokeKeyTestDelay();
+			#else
+				#ifdef SUPPORT_CO_FUNCTION
+				COKeyTestDelay(1);						
+				#else
+				Q_TRAN(SysIdleModeHandleEvent);
+				#endif
+			#endif	
+
+		break;
+			
+		case Q_EXIT_SIG:
+			#ifdef Debug_Test
+				printflog("out, %s ,%d\r\n",__FUNCTION__,__LINE__);
+			#endif
+			#ifdef SUPPORT_LCD_FUNCTION
+				LCD_BackLightControl(eLcdBackLightOFF);
+			#endif		
+			ResetSysSleepFlag(eActiveFlagKeyTest);
+			TmrDeleteTimer(TmrGetHandleByEvent(GetTmrHd(), PollingKeyTestSmokeTestOverDelay));
+			TmrDeleteTimer(TmrGetHandleByEvent(GetTmrHd(), PollingKeyTestEndLcdOffDelay));
+			
+			break;
+		#ifdef SUPPORT_LCD_FUNCTION
+		case eSystemEventKeyTestTimeout:
+			Q_TRAN(SysIdleModeHandleEvent);
+			break;
+		#endif
+		case eSystemEventSmokeBeepOK:	// for  smoke test key response	
+			if(i==0)
+			{	
+				i++;
+				#ifdef SUPPORT_SMOKE_FUNCTION
+					SmokeKeyTest();
+				#endif
+			}else
+			{
+				i = 0;
+				TmrInsertTimer(GetTmrHd(), TMR_PERIOD(3500), PollingKeyTestSmokeTestOverDelay, NULL);
+			}
+			break;
+
+			
+		case eSystemEventKeyTtestSmokeTestOver:	//烟感蜂鸣器测试结束
+			#ifdef SUPPORT_CO_FUNCTION
+				COKeyTestDelay(1);
+			#else
+				LedPollingHandle(LED_TYPE_RED,50);
+				BeepPollingHandle(50);
+				TmrInsertTimer(GetTmrHd(), TMR_PERIOD(2000), PollingKeyTestEndLcdOffDelay, NULL);
+			#endif
+			break;			
+		#ifdef SUPPORT_CO_FUNCTION	
+		case eSystemEventCOBeepOK:	// for	CO test key response
+			if(i==0)
+			{	
+				i++;
+				#ifdef SUPPORT_CO_FUNCTION
+					COKeyTestDelay(0);
+				#endif
+			}else
+			{
+				i = 0;	
+				TmrInsertTimer(GetTmrHd(), TMR_PERIOD(1000), PollingKeyTestCoTestOverDelay, NULL);
+			}
+			
+			break;
+	
+		case eSystemEventKeyTtestCoTestOver:
+			#ifdef SUPPORT_WIFI_NET_FUNCTION
+			#ifdef WiFiUpdataNew
+			SetWiFiUpdata(DPID_CHECKING_RESULT,SelfTestOK,0xff,0,0xff,0);
+			WiFiOpenCheck();
+			#else
+			Get_DpId_Data(DPID_CHECKING_RESULT,SelfTestOK);
+			#endif
+			#endif
+			#ifdef SUPPORT_NET_FUNCTION
+				if(SystemGetNetMode()==ePairedHub)//hub
+				{
+					UartSendMsg(eUartMsgFireAlarm, UartFirmAlarmMsgTest, DevTestSuccess, 0);
+				}
+			#endif
+			LedPollingHandle(LED_TYPE_RED,50);
+			BeepPollingHandle(50);
+			#ifdef SUPPORT_LCD_FUNCTION
+				LCD_Clear();
+				LCD_DisplayBatteryData(eLcdBatteryFlgOff);
+				LCD_DsiplayCoFlg(eLcdOFF);
+				LCD_DsiplayStr(eStr_PAS, 0, 2);
+			#endif
+			TmrInsertTimer(GetTmrHd(), TMR_PERIOD(2000), PollingKeyTestEndLcdOffDelay, NULL);
+			break;
+		#endif
+		
+		case eSystemEventKeyTtestOver:	//
+			#ifdef SUPPORT_LCD_FUNCTION	
+				LCDStandyDisplay();
+			#endif
+			
+		//	Q_TRAN(SystemPeakDisplayHandle);
+			
+			Q_TRAN(SysIdleModeHandleEvent);
+			break;
+
+		#ifdef SUPPORT_SMOKE_FUNCTION
+		case eSystemEventSmokeErr:
+			SensorErrUpdata();
+			Q_TRAN(SystemSmokeError);
+			break;
+		#endif	
+
+		#ifdef SUPPORT_CO_FUNCTION	
+		case eSystemEventCOErr:
+			SensorErrUpdata();
+			Q_TRAN(SystemCOError);
+			break;
+		#endif
+			
+		default:
+			break;
+	}
+}
+#ifdef SUPPORT_WIFI_NET_FUNCTION
+
+void WiFiPirHandl(SystemApiTag *me,QEvent *e)
+{
+	switch (e->sig)
+	{
+		case Q_ENTRY_SIG:
+			WifiAO.PirState=1;
+			printflog("in, %s ,%d\r\n",__FUNCTION__,__LINE__);
+			break;
+		case Q_EXIT_SIG:
+			printflog("out, %s ,%d\r\n",__FUNCTION__,__LINE__);
+			break;	
+		
+		case eSystemEventAPWiFi:
+			WIFIAP();
+			break;
+		
+		case eSystemEventEZWiFi:
+			WIFIEZ();
+			break;
+		
+		case Q_eKeyEventKey0Clik:
+			MainEvent.sig=eSystemEventAPWiFi;
+			SystemPostFifo(&MainEvent);
+		break;
+		
+		case Q_eKeyEventKey1LongClik://长按测试键
+		MainEvent.sig=eSystemEventEZWiFi;
+		SystemPostFifo(&MainEvent);
+		break;
+		
+		case eSystemEventExitPir:
+			Q_TRAN(&SysIdleModeHandleEvent);
+		break;
+	}
+}
+#endif	
+
+static void SystemCommonhandle(SystemApiTag *me,QEvent *e)
+{	
+	switch (e->sig)
+	{
+		#ifdef SUPPORT_SMOKE_FUNCTION
+		case Q_eSmokeEventAlarm:
+			#ifdef SUPPORT_WIFI_NET_FUNCTION
+			SetWiFiUpdata(DPID_SMOKE_SENSOR_STATE,SmokeIs,0xff,0,0xff,0);
+			WiFiOpenCheck();
+			#endif
+			Q_TRAN(&SysSmokeAlarmModeEvent);
+			break;
+		
+		case eSystemEventSmokeErr:
+			SensorErrUpdata();
+			Q_TRAN(SystemSmokeError);
+			break;	
+		#endif
+
+		#ifdef SUPPORT_CO_FUNCTION
+		case eSystemEventCOAlarm:
+			#ifdef SUPPORT_WIFI_NET_FUNCTION
+			#ifdef WiFiUpdataNew
+			SetWiFiUpdata(DPID_CO_STATE,COAlarm,DPID_CO_VALUE,GetCOPpm(),0xff,0);
+			WiFiOpenCheck();
+			#else
+			Get_DpId_Data(DPID_MUFFLING,MuteStateOff);//Cancel Mute & Cancel Alarm
+			#endif
+			#endif
+			Q_TRAN(SystemCOAlarm);		
+			break;		
+		
+		case eSystemEventCOErr:
+			SensorErrUpdata();
+			Q_TRAN(SystemCOError);		
+			break;
+		#endif
+		
+		#ifdef SUPPORT_WIFI_NET_FUNCTION
+		case Q_eKeyEventKey0Clik:
+				MainEvent.sig=eSystemEventAPWiFi;
+				SystemPostFifo(&MainEvent);
+				Q_TRAN(&WiFiPirHandl);
+			#if 0
+			if(!WifiAO.WifiUpdateFlag)
+			{
+				if((mcu_get_wifi_work_state()==SMART_CONFIG_STATE)||(mcu_get_wifi_work_state()==WIFI_NOT_CONNECTED))
+				{
+					WifiAO.WifiResetFlag = FALSE;
+					mcu_set_wifi_mode(AP_CONFIG);	
+					FlashSeteUpgradeFlag(eAPMode);
+					WifiAO.eUpgradeFlag = eAPMode;
+					BeepPollingHandle(100);	
+				}else
+				{
+					WiFi_EN(eAPMode);
+				}
+			}
+			#endif
+		break;
+
+		case Q_eKeyEventKey1LongClik://长按测试键
+			MainEvent.sig=eSystemEventEZWiFi;
+			SystemPostFifo(&MainEvent);
+			Q_TRAN(&WiFiPirHandl);
+			#if 0
+			if(!WifiAO.WifiUpdateFlag)
+			{
+				if((mcu_get_wifi_work_state()==AP_CONFIG)||(mcu_get_wifi_work_state()==WIFI_NOT_CONNECTED))
+				{
+					WifiAO.WifiResetFlag = FALSE;
+					mcu_set_wifi_mode(SMART_CONFIG_STATE);
+					FlashSeteUpgradeFlag(eSTAMode);
+					WifiAO.eUpgradeFlag = eSTAMode;
+					WifiAO.FirstOpenFlag = 1;
+					BeepPollingHandle(100);
+				}
+				else
+				{
+					WiFi_EN(eSTAMode);
+				}
+			}
+				#endif
+		break;
+	#endif	
+/*****************************************NET FUNCTION****************************************************/		
+#ifdef SUPPORT_NET_FUNCTION
+
+		case Q_eKeyEventKey0Clik:					//短按 接收模式			
+			Q_TRAN(NetRxPairMode);
+			break;	
+				
+		case Q_eKeyEventKey0LongClik:				//长按 发射模式			
+			Q_TRAN(NetTxPairMode);
+			break;		
+		
+		case Q_eKeyEventKey0FourClik:				
+			Q_TRAN(NetExitPairMode);
+			break;	
+
+
+		case Q_eKeyEventKey1LongClik://长按测试键
+			if(SystemGetNetMode()==ePairedIntranet)
+			{
+				Q_TRAN(NetSendTestMode);
+			}else
+			{
+				LedPollingHandle(LED_TYPE_GREEN, 100);
+				Q_TRAN(NetPairingHubMode);		
+			}
+			break;
+			
+		case eNETEventTest:
+			{
+				Q_TRAN(NetTestMode);
+			}
+		 	break;
+			
+		#ifdef SUPPORT_RF_NET_FUNCTION
+		case eNETEventSmokeAlarm:
+			if(IsNetEnable())
+			{
+		 		Q_TRAN(NetSmokeAlarm);
+			}
+		 	break;
+					
+		case eNETEventCoAlarm:
+			if(IsNetEnable())
+			{
+		 		Q_TRAN(NetCOAlarm);
+			}
+		 	break;
+		#endif
+#endif
+			
+
+		default:
+		
+		break;
+	}
+
+}
+/******************************************************************************
+**Description:				for product end life index														
+** Parameters:                     none   												
+**     Return:   					none												
+*******************************************************************************/
+
+static void LedFlickerEndLife(void)
+{   
+  	if(SystemApiTagObj.DeviceState == eDevicePreEndofLifeMute)
+	{
+		if(SystemApiTagObj.SilenceTime>=ENDOFLIFE_MUTE_TIME)
+		{
+			SystemApiTagObj.DeviceState = eDevicePreEndofLife;
+			SystemApiTagObj.SilenceTime = 0;
+
+		}else
+		{
+			++SystemApiTagObj.SilenceTime;
+		}
+		if(( SystemApiTagObj.SlpTimeCnt%ENDLIFE_MODE_CYCLE_COUNT) == (ENDLIFE_MODE_CYCLE_COUNT-1)) 	 //led cycle 60s
+		{		 
+			EndLifeIndex(1,LED_TYPE_YELLOW,0,3,50);
+			SensorTemperatureCheck();
+		}
+	}else
+	{
+		if(( SystemApiTagObj.SlpTimeCnt%ENDLIFE_MODE_CYCLE_COUNT) == (ENDLIFE_MODE_CYCLE_COUNT-1)) 	 //led cycle 60s
+		{		 
+			EndLifeIndex(1,LED_TYPE_YELLOW,1,3,50);
+			SensorTemperatureCheck();
+		
+		}
+	}	
+}
+
+
+/******************************************************************************
+**Description:				product endoftime state handle														
+** Parameters:                     object and event   												
+**     Return:   						none											
+*******************************************************************************/
+void SystemEndofTimeHandle(SystemApiTag  *me,QEvent *e)
+{	
+	
+	switch (e->sig)
+	{
+		case Q_eSystemEventWakeup:		
+			#ifdef SUPPORT_SMOKE_FUNCTION
+			CheckSmokerAlarm(FALSE,TRUE);
+			#endif
+			#ifdef SUPPORT_CO_FUNCTION
+			COSelfCheck();
+			#endif
+			BatterCheck();
+		    SystemPollingIdle();
+		    SysTimeUpdate();
+			LedFlickerEndLife();
+			break;	
+			
+		case Q_ENTRY_SIG:
+			#ifdef Debug_Test
+				printflog("%s in,%d\n",__FUNCTION__,__LINE__);		
+			#endif
+			#ifdef SUPPORT_LCD_FUNCTION
+			
+			LCD_Control(eLcdON);
+			BatteryLcdDisplay();//must be in fore
+			LCD_DsiplayStr(eStr_End, 0, 0);
+			LCD_DsiplayCoFlg(eLcdON);
+			#endif 
+			#ifdef SUPPORT_SYSTEM_MODE_DEBUG
+			if(IsUartOpen())
+			{
+				printf("%s in,%d\n",__FUNCTION__,__LINE__);
+			}
+			#endif
+			break;
+			
+		case Q_EXIT_SIG:
+			#ifdef Debug_Test
+				printflog("%s out,%d\n",__FUNCTION__,__LINE__);		
+			#endif
+			#ifdef SUPPORT_LCD_FUNCTION
+				LCDStandyDisplay();
+			#endif 
+		
+			break;
+
+		case Q_eKeyEventKey1Clik:	
+			if(SystemApiTagObj.DeviceState == eDevicePreEndofLife)
+			{
+				SystemApiTagObj.DeviceState = eDevicePreEndofLifeMute;
+				SystemApiTagObj.SilenceTime = 0;
+			}else if(SystemApiTagObj.DeviceState == eDevicePreEndofLifeMute)
+			{
+				SystemApiTagObj.SilenceTime = ENDOFLIFE_MUTE_TIME;
+				MainEvent.sig = Q_eKeyEventKey1Clik;
+				SystemPostFifo(&MainEvent);
+				Q_TRAN(SysIdleModeHandleEvent);
+			}
+			
+			break;	
+
+		default:
+			SystemCommonhandle(me,e);
+			break;
+	}
+
+}
+
+
+/******************************************************************************
+**Description:			    syetem LowPwr handle															
+** Parameters:               object and event         												
+**     Return:   				none													
+*******************************************************************************/
+
+void SystemLowPwrHandle(SystemApiTag  *me,QEvent *e)
+{	
+	switch (e->sig)
+	{
+		case Q_eSystemEventWakeup:	
+			#ifdef SUPPORT_SMOKE_FUNCTION
+			CheckSmokerAlarm(FALSE,TRUE);
+			#endif
+			#ifdef SUPPORT_CO_FUNCTION
+			COSelfCheck();
+			#endif
+			BatterCheck();
+		    SystemPollingIdle();
+		    SysTimeUpdate();
+			LedLowPwrFlickerCheck();	
+			break;	
+			
+		case Q_ENTRY_SIG:
+			#ifdef SUPPORT_LCD_FUNCTION 
+			LCD_DsiplayStr(eStr_Lb,0,0);
+			#endif
+
+			#ifdef Debug_Test
+				printf("%s in,%d\n",__FUNCTION__,__LINE__);			
+			#endif
+			
+			me->LowPwrSilenceFlag = 0;
+			me->LowBatCnt = 0;
+			LedPollingHandle(LED_TYPE_YELLOW, 100);	
+			BeepPollingHandle(100);
+			break;
+			
+		case Q_EXIT_SIG:
+			
+			#ifdef Debug_Test
+				printf("%s out,%d\n",__FUNCTION__,__LINE__);			
+			#endif
+			#ifdef SUPPORT_LCD_FUNCTION
+			LCDStandyDisplay();
+			#endif
+			//退出时恢复标志位
+			me->LowBatCnt = 0;
+			me->LowPwrSilenceFlag = 0;
+			SystemApiTagObj.LowPwrSilence = 0;
+			break;
+
+		case Q_eKeyEventKey1Clik:		
+			if(me->LowPwrSilenceFlag==0)// silence
+			{
+				#ifdef SUPPORT_UL2034_UL217
+		      	if(GetBatteryData()>LOW_BATTERY_HUSH_FORBID_THRESHOLD)
+				#endif
+		      	{
+					me->LowPwrSilenceFlag = 1;
+					me->LowPwrSilence = 0;
+					me->LowBatCnt = 0;
+					LedPollingHandle(LED_TYPE_YELLOW, 100);
+		      	}
+		      	#ifdef SUPPORT_UL2034_UL217
+		        else
+		        {
+		          MainEvent.sig = Q_eKeyEventKey1Clik;
+		          SystemPostFifo(&MainEvent);
+		          Q_TRAN(SysIdleModeHandleEvent);
+		        }
+		        #endif
+			}
+			else
+			{
+				MainEvent.sig = Q_eKeyEventKey1Clik;
+				SystemPostFifo(&MainEvent);
+				Q_TRAN(SysIdleModeHandleEvent);
+			}
+			break;		
+
+	    case eSystemEventLowPwrCancel:
+			#ifdef SUPPORT_LCD_FUNCTION
+				LCDStandyDisplay();
+			#endif
+			Q_TRAN(SysIdleModeHandleEvent);
+			break;
+		
+		default:
+			
+			SystemCommonhandle(me,e);
+			break;
+	}
+}
+
+
+
+/**********************************************************************/
+//Description:	SysIdleModeHandleEvent()									
+//Parameters:                        									
+//Return:   															
+//Date:           
+//Author:		quanwu.xu  
+/**********************************************************************/
+void SysIdleModeHandleEvent(SystemApiTag  *me,QEvent *e)
+{
+
+	switch (e->sig)
+	{
+		case Q_ENTRY_SIG:
+			#ifdef Debug_Test
+			printflog("%s (in)\n", __FUNCTION__);
+			#endif
+			WiFiRSSIDisPlay();
+			break;
+			
+		case Q_EXIT_SIG:
+			#ifdef Debug_Test
+			printflog("%s (out)\n", __FUNCTION__);
+			#endif
+			break;
+		
+		case Q_eSystemEventWakeup:
+			#ifdef SUPPORT_SMOKE_FUNCTION
+			CheckSmokerAlarm(FALSE,TRUE);
+			#endif			
+			BatterCheck();			
+			#ifdef SUPPORT_CO_FUNCTION
+			COSelfCheck();
+			#endif
+			SystemPollingIdle();
+			SysTimeUpdate();			
+			LedFlickerCheck();
+			
+		break;
+		
+		case Q_eKeyEventKey1Clik:		
+			if(GetSysSleepFlag()&eActiveFlagNetConnetTimeout)
+			{
+				;
+			}else
+			{
+				Q_TRAN(SystemKeyTestHandle);	
+			}
+			break;
+
+		case eSystemEventEndLife:
+			Q_TRAN(SystemEndofTimeHandle);
+			break;
+		case Q_eSystemEventLowBat:
+			Q_TRAN(SystemLowPwrHandle);
+			break;
+		
+
+		default:
+			SystemCommonhandle(me,e);
+			break;
+	}
+}
+
+/*****************************************************************************
+*函数名称 : WakeUpCheck
+*功能描述 : halt待机标志检测
+*输入参数 : 
+*返回参数 : 
+*使用说明 : 
+*****************************************************************************/
+static void WakeUpCheck(void)
+{
+	
+	if((SystemApiTagObj.SysActiveFlag&eActiveFlagNet)==0)
+	{
+		//RTC 10s睡眠起来
+		if(pSystemApiTagObj->RTCWakeUpFlag)
+		{
+			pSystemApiTagObj->RTCWakeUpFlag = RESET;
+			MainEvent.sig = Q_eSystemEventWakeup;
+			SystemPostFifo(&MainEvent);
+			#ifdef Debug_Test
+			printflog("sig = wakeup\n");
+			#endif
+		}
+	}else
+	{
+		//printf("%s ,ActiveFlag:%ld\n",__FUNCTION__,SystemApiTagObj.SysActiveFlag);
+		LedPollingHandle(LED_TYPE_GREEN,30);	
+	}
+		
+	
+
+}
+
+/**********************************************************************/
+//Name:			main()
+//Description:															
+//Parameters:                        									
+//Return:   															
+//Date:           
+//Author:		quanwu.xu  
+/**********************************************************************/
+void main(void)
+{
+	
+	QEvent const*e;
+	QEvent ie;
+
+	SystemCtor(&SystemApiTagObj, (QState)&SystemApiInit);
+	QFsm_init((QFsm *)&SystemApiTagObj, (QEvent const *)&ie); 	
+	while(1)
+	{		
+		IWDG_ReloadCounter();
+		SystemPolling();
+		KeyProcess();
+		#ifdef SUPPORT_NET_FUNCTION	
+		NetMain();
+		#elif (defined  SUPPORT_WIFI_NET_FUNCTION)
+		wifi_uart_service();
+		if(WifiAO.WifiCONNFlag)
+		{
+			WifiAO.WifiCONNFlag = FALSE;
+			#ifdef WiFiUpdataNew
+			Mcu_dp_Update_All();
+			#else
+			WIFIStateHandle(WifiAO.WifiUpdateState);
+			#endif
+		}
+		#endif	
+		e = QEQueue_get(&SystemApiTagObj.eQueue__);
+		if (NULL!=e)
+		{
+			QFsm_dispatch((QFsm *)&SystemApiTagObj, e);
+			MainFreeQueue((SystemQueueTag*)e);
+		}
+		else
+		{
+			if((GetSysSleepFlag() == eSysActiveFlag_NULL))
+			{
+				G_LED_TURN_OFF();
+				R_LED_TURN_OFF();
+				WIFI_POWER_OFF();
+				EnterActiveHaltMode();
+				WakeUpCheck();
+				TmrResetCurCnt(TmrGetHandleByEvent(GetTmrHd(), SytemTimeOutHandle));//for no idle input 
+			}
+			else
+			{
+//				printf("SysActiveFlag:%ld\n", GetSysSleepFlag());
+			}
+		}
+		
+	}
+}
+
+
